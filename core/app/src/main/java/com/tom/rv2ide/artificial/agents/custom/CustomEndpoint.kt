@@ -109,7 +109,7 @@ class CustomEndpoint : AIAgent {
 
   override fun clearConversation() {
     conversationHistory.clear()
-    try { prefs().putString(histKey(), "") } catch (_: Exception) { }
+    try { prefs().putString(histKey(), "") } catch (ignored: Exception) { }
     modificationHistory.clear()
     currentAttemptCount = 0
   }
@@ -256,7 +256,7 @@ class CustomEndpoint : AIAgent {
           val toolResults = parseAndExecuteToolCalls(response)
           val storedResponse = if (toolResults.isNotEmpty()) {
               response + "\n\n[TOOL RESULTS]\n" + toolResults.joinToString("\n") { r ->
-                  "- ${r.function}: ${if (r.success) "OK" else "FAIL"} — ${r.message}"
+                  "- ${r.function}: ${if (r.success) "OK" else "FAIL"} - ${r.message}"
               }
           } else response
           conversationHistory.add(ConversationMessage("user", prompt))
@@ -499,7 +499,7 @@ class CustomEndpoint : AIAgent {
               json.put(org.json.JSONObject().put("role", m.role).put("content", m.content.take(4000)))
           }
           prefs().putString(histKey(), json.toString())
-      } catch (_: Exception) { }
+      } catch (ignored: Exception) { }
   }
 
   private fun restoreHistory() {
@@ -512,7 +512,7 @@ class CustomEndpoint : AIAgent {
               val o = json.getJSONObject(i)
               conversationHistory.add(ConversationMessage(o.optString("role", "user"), o.optString("content", "")))
           }
-      } catch (_: Exception) { }
+      } catch (ignored: Exception) { }
   }
 
   // ---- tool_call XML: <tool_call><function=bash><parameter=mkdir path=.../> + writefile ----
