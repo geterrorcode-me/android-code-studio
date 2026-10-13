@@ -11,7 +11,7 @@ import com.tom.rv2ide.R
 import com.tom.rv2ide.app.BaseApplication
 
 class CustomEndpointConfigDialog(
-    private val onSave: (baseUrl: String, apiKey: ***, modelName: String) -> Unit
+    private val onSave: (baseUrl: String, apiKey: String, modelName: String) -> Unit
 ) : BottomSheetDialogFragment() {
 
     private lateinit var baseUrlInput: TextInputEditText
@@ -41,7 +41,7 @@ class CustomEndpointConfigDialog(
 
         saveButton.setOnClickListener {
             val baseUrl = baseUrlInput.text.toString().trim().trimEnd('/')
-            val apiKey = ***.toString().trim()
+            val apiKey = String.toString().trim()
             val modelName = modelNameInput.text.toString().trim()
 
             if (baseUrl.isNotEmpty() && apiKey.isNotEmpty() && modelName.isNotEmpty()) {
@@ -61,7 +61,7 @@ class CustomEndpointConfigDialog(
         modelNameInput.setText(prefs.getString("ai_agent_custom_model", "cbai/deepseek-v4.1-flash"))
     }
 
-    private fun saveConfig(baseUrl: String, apiKey: ***, modelName: String) {
+    private fun saveConfig(baseUrl: String, apiKey: String, modelName: String) {
         val prefs = BaseApplication.getBaseInstance().prefManager
         prefs.putString("ai_agent_custom_base_url", baseUrl)
         prefs.putString("ai_agent_custom_api_key", apiKey)
