@@ -68,6 +68,16 @@ class CustomEndpoint : AIAgent {
               }
           })
       }
+
+      private const val CUSTOM_TOOLS_HINT = """
+
+[ TOOL CALLS — BISA DIEKSEKUSI LANGSUNG ]
+Selain FILE_TO_MODIFY, kamu juga bisa memakai format ini (langsung dijalankan app, hasilnya balik ke kamu):
+<tool_call><function=bash><parameter=mkdir path=/absolut/path/baru/></function></tool_call>
+<tool_call><function=writefile><parameter=path path=/absolut/file/baru.kt/><parameter=content>isi file...</parameter></function></tool_call>
+<tool_call><function=readfile><parameter=path path=/absolut/file.kt/></function></tool_call>
+Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk file yang sama). mkdir hanya untuk folder. writefile untuk tulis file baru/penuh.
+"""
   }
         
   override fun initialize(apiKey: String, context: Context) {
@@ -476,18 +486,6 @@ class CustomEndpoint : AIAgent {
   }
 
   override fun isInitialized(): Boolean = apiKey != null
-
-  companion object {
-      private const val CUSTOM_TOOLS_HINT = """
-
-[ TOOL CALLS — BISA DIEKSEKUSI LANGSUNG ]
-Selain FILE_TO_MODIFY, kamu juga bisa memakai format ini (langsung dijalankan app, hasilnya balik ke kamu):
-<tool_call><function=bash><parameter=mkdir path=/absolut/path/baru/></function></tool_call>
-<tool_call><function=writefile><parameter=path path=/absolut/file/baru.kt/><parameter=content>isi file...</parameter></function></tool_call>
-<tool_call><function=readfile><parameter=path path=/absolut/file.kt/></function></tool_call>
-Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk file yang sama). mkdir hanya untuk folder. writefile untuk tulis file baru/penuh.
-"""
-  }
 
   // ---- persist chat history ke SharedPreferences (max 40 pesan, survive restart) ----
   private val histKey: String get() = "ai_agent_custom_history"
