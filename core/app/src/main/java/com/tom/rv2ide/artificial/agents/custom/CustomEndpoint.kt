@@ -529,6 +529,17 @@ Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk fil
       val message: String
   )
 
+  data class FileModification(
+      val filePath: String,
+      val content: String,
+      val writeResult: FileWriteResult
+  )
+
+  data class ConversationMessage(
+      val role: String,
+      val content: String
+  )
+
   fun parseAndExecuteToolCalls(response: String): List<ToolCallResult> {
       val results = mutableListOf<ToolCallResult>()
       for (m in toolCallRegex.findAll(response)) {
@@ -540,7 +551,7 @@ Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk fil
                       val params = parseParams(inner)
                       val cmd = (params["command"] ?: params["cmd"] ?: "").trim()
                       // hanya izinkan mkdir -p (aman, tanpa shell injection)
-                      val mk = Regex("""mkdir\\s+(?:-p\\s+)?([\\w/.-]+)""").find(cmd)
+                      val mk = Regex("mkdir\\s+(?:-p\\s+)?([\\w/.-]+)").find(cmd)
                       if (mk != null) {
                           val dir = java.io.File(mk.groupValues[1])
                           val ok = dir.mkdirs() || dir.isDirectory
@@ -613,13 +624,4 @@ Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk fil
   }
 }
 
-data class FileModification(
-    val filePath: String,
-    val content: String,
-    val writeResult: FileWriteResult
-)
 
-data class ConversationMessage(
-    val role: String,
-    val content: String
-)
