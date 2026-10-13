@@ -146,7 +146,7 @@ class Agents(ctx: Context) {
 
   // custom: model dibaca dari prefs (user ketik bebas). Fallback contoh 9router.
   private fun custom_models(): Array<String> {
-    val m = sp.getString("ai_agent_custom_model", "").trim()
+    val m = (sp.getString("ai_agent_custom_model", "") ?: "").trim()
     return if (m.isNotBlank()) arrayOf(m) else arrayOf("cbai/deepseek-v4.1-flash", "oc/muse-spark-1.3-contributor-free", "custom-model")
   }
   
