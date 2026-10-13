@@ -109,7 +109,7 @@ class CustomEndpoint : AIAgent {
 
   override fun clearConversation() {
     conversationHistory.clear()
-    try { prefs().putString(histKey, "") } catch (_: Exception) { }
+    try { prefs().putString(histKey(), "") } catch (_: Exception) { }
     modificationHistory.clear()
     currentAttemptCount = 0
   }
@@ -487,7 +487,7 @@ class CustomEndpoint : AIAgent {
 
 
   // ---- persist chat history ke SharedPreferences (max 40 pesan, survive restart) ----
-  private val histKey: String get() = "ai_agent_custom_history"
+  private fun histKey(): String = "ai_agent_custom_history"
 
   private fun prefs() = com.tom.rv2ide.preferences.internal.prefManager
 
@@ -498,13 +498,13 @@ class CustomEndpoint : AIAgent {
           for (m in take) {
               json.put(org.json.JSONObject().put("role", m.role).put("content", m.content.take(4000)))
           }
-          prefs().putString(histKey, json.toString())
+          prefs().putString(histKey(), json.toString())
       } catch (_: Exception) { }
   }
 
   private fun restoreHistory() {
       try {
-          val raw = prefs().getString(histKey, "")
+          val raw = prefs().getString(histKey(), "")
           if (raw.isBlank()) return
           val json = org.json.JSONArray(raw)
           conversationHistory.clear()
