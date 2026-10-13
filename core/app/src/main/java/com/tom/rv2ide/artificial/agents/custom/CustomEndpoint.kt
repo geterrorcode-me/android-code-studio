@@ -82,6 +82,7 @@ class CustomEndpoint : AIAgent {
           agents?.setProvider("custom")
           
           this.selectedModel = selectedModel
+          restoreHistory()
       } catch (e: Exception) {
           throw e
       }
@@ -101,6 +102,7 @@ class CustomEndpoint : AIAgent {
 
   override fun clearConversation() {
     conversationHistory.clear()
+    try { prefs().putString(histKey, "") } catch (_: Exception) { }
     modificationHistory.clear()
     currentAttemptCount = 0
   }
@@ -243,8 +245,16 @@ class CustomEndpoint : AIAgent {
             return@withContext Result.failure(Exception("Empty response from AI"))
           }
 
+          // eksekusi tool_call XML (mkdir/writefile) sebelum disimpan ke history
+          val toolResults = parseAndExecuteToolCalls(response)
+          val storedResponse = if (toolResults.isNotEmpty()) {
+              response + "\n\n[TOOL RESULTS]\n" + toolResults.joinToString("\n") { r ->
+                  "- ${r.function}: ${if (r.success) "OK" else "FAIL"} — ${r.message}"
+              }
+          } else response
           conversationHistory.add(ConversationMessage("user", prompt))
-          conversationHistory.add(ConversationMessage("assistant", response))
+          conversationHistory.add(ConversationMessage("assistant", storedResponse))
+          persistHistory()
 
           if (conversationHistory.size > 20) {
             conversationHistory.removeAt(0)
@@ -276,7 +286,7 @@ class CustomEndpoint : AIAgent {
       
       val systemMessage = JSONObject()
       systemMessage.put("role", "system")
-      systemMessage.put("content", writingRules.useThis())
+      systemMessage.put("content", writingRules.useThis() + CUSTOM_TOOLS_HINT)
       messages.put(systemMessage)
       
       val userMessage = JSONObject()
@@ -466,6 +476,125 @@ class CustomEndpoint : AIAgent {
   }
 
   override fun isInitialized(): Boolean = apiKey != null
+
+  companion object {
+      private const val CUSTOM_TOOLS_HINT = """
+
+[ TOOL CALLS — BISA DIEKSEKUSI LANGSUNG ]
+Selain FILE_TO_MODIFY, kamu juga bisa memakai format ini (langsung dijalankan app, hasilnya balik ke kamu):
+<tool_call><function=bash><parameter=mkdir path=/absolut/path/baru/></function></tool_call>
+<tool_call><function=writefile><parameter=path path=/absolut/file/baru.kt/><parameter=content>isi file...</parameter></function></tool_call>
+Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk file yang sama). mkdir hanya untuk folder. writefile untuk tulis file baru/penuh.
+"""
+  }
+
+  // ---- persist chat history ke SharedPreferences (max 40 pesan, survive restart) ----
+  private val histKey: String get() = "ai_agent_custom_history"
+
+  private fun prefs() = com.tom.rv2ide.preferences.internal.prefManager
+
+  private fun persistHistory() {
+      try {
+          val take = conversationHistory.takeLast(40)
+          val json = org.json.JSONArray()
+          for (m in take) {
+              json.put(org.json.JSONObject().put("role", m.role).put("content", m.content.take(4000)))
+          }
+          prefs().putString(histKey, json.toString())
+      } catch (_: Exception) { }
+  }
+
+  private fun restoreHistory() {
+      try {
+          val raw = prefs().getString(histKey, "")
+          if (raw.isBlank()) return
+          val json = org.json.JSONArray(raw)
+          conversationHistory.clear()
+          for (i in 0 until minOf(json.length(), 40)) {
+              val o = json.getJSONObject(i)
+              conversationHistory.add(ConversationMessage(o.optString("role", "user"), o.optString("content", "")))
+          }
+      } catch (_: Exception) { }
+  }
+
+  // ---- tool_call XML: <tool_call><function=bash><parameter=mkdir path=.../> + writefile ----
+  private val toolCallRegex = Regex("<tool_call>\\s*<function=(\\w+)>(.*?)</function>\\s*</tool_call>", RegexOption.DOT_MATCHES_ALL)
+  private val paramRegex = Regex("<parameter=(\\w+)\\s+([^>/]*?)(?:/>|>(.*?)</parameter>)", RegexOption.DOT_MATCHES_ALL)
+  private val attrRegex = Regex("(\\w+)=([^\\s]+)")
+
+  data class ToolCallResult(
+      val function: String,
+      val success: Boolean,
+      val message: String
+  )
+
+  fun parseAndExecuteToolCalls(response: String): List<ToolCallResult> {
+      val results = mutableListOf<ToolCallResult>()
+      for (m in toolCallRegex.findAll(response)) {
+          val fn = m.groupValues[1].lowercase()
+          val inner = m.groupValues[2]
+          try {
+              when (fn) {
+                  "bash" -> {
+                      val params = parseParams(inner)
+                      val cmd = (params["command"] ?: params["cmd"] ?: "").trim()
+                      // hanya izinkan mkdir -p (aman, tanpa shell injection)
+                      val mk = Regex("""mkdir\\s+(?:-p\\s+)?([\\w/.-]+)""").find(cmd)
+                      if (mk != null) {
+                          val dir = java.io.File(mk.groupValues[1])
+                          val ok = dir.mkdirs() || dir.isDirectory
+                          results.add(ToolCallResult(fn, ok, if (ok) "mkdir ok: ${dir.path}" else "mkdir failed: ${dir.path}"))
+                      } else {
+                          // dukung <parameter=mkdir path=.../>
+                          val p = params["mkdir"] ?: params["path"] ?: ""
+                          if (p.isNotBlank()) {
+                              val dir = java.io.File(p)
+                              val ok = dir.mkdirs() || dir.isDirectory
+                              results.add(ToolCallResult(fn, ok, if (ok) "mkdir ok: ${dir.path}" else "mkdir failed: ${dir.path}"))
+                          } else {
+                              results.add(ToolCallResult(fn, false, "bash: hanya mkdir yang didukung, cmd ditolak"))
+                          }
+                      }
+                  }
+                  "writefile", "write_file", "write" -> {
+                      val params = parseParams(inner)
+                      val path = (params["path"] ?: params["file"] ?: "").trim()
+                      val content = params["content"] ?: params["text"] ?: ""
+                      if (path.isBlank()) {
+                          results.add(ToolCallResult(fn, false, "writefile: path kosong"))
+                      } else {
+                          val wr = writeFile(path, content)
+                          val ok = wr is FileWriteResult.Success
+                          if (ok) recordModification(path, null, content, true)
+                          results.add(ToolCallResult(fn, ok, if (ok) "wrote: $path" else "write failed: $path"))
+                      }
+                  }
+                  else -> results.add(ToolCallResult(fn, false, "fungsi tidak didukung: $fn"))
+              }
+          } catch (e: Exception) {
+              results.add(ToolCallResult(fn, false, "error: ${e.message}"))
+          }
+      }
+      return results
+  }
+
+  private fun parseParams(inner: String): Map<String, String> {
+      val out = mutableMapOf<String, String>()
+      for (pm in paramRegex.findAll(inner)) {
+          val key = pm.groupValues[1].lowercase()
+          val attrStr = pm.groupValues[2]
+          val body = pm.groupValues[3]
+          val attrs = attrRegex.findAll(attrStr).associate { it.groupValues[1].lowercase() to it.groupValues[2] }
+          if (key == "mkdir" && attrs.containsKey("path")) {
+              out["mkdir"] = attrs["path"] ?: ""
+          } else {
+              out[key] = if (body.isNotBlank()) body.trim() else (attrs["value"] ?: attrs.values.firstOrNull() ?: "")
+          }
+          // atribut path generik (mis. <parameter=command path=...>jarang, tapi tampung)
+          if (attrs.containsKey("path") && !out.containsKey("path")) out["path"] = attrs["path"] ?: ""
+      }
+      return out
+  }
 }
 
 data class FileModification(
