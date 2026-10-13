@@ -41,7 +41,7 @@ class CustomEndpointConfigDialog(
 
         saveButton.setOnClickListener {
             val baseUrl = baseUrlInput.text.toString().trim().trimEnd('/')
-            val apiKey = String.toString().trim()
+            val apiKey = apiKeyInput.text.toString().trim()
             val modelName = modelNameInput.text.toString().trim()
 
             if (baseUrl.isNotEmpty() && apiKey.isNotEmpty() && modelName.isNotEmpty()) {
