@@ -51,6 +51,13 @@ class CustomEndpoint : AIAgent {
   override val providerName = "Custom Endpoint"
 
   companion object {
+      private val CUSTOM_TOOLS_HINT = "\n[ TOOL CALLS ]\n" +
+          "Format eksekusi langsung (hasil balik ke kamu):\n" +
+          "mkdir: mkdir path=/absolut/folder\n" +
+          "tulis: writefile path=/absolut/f.kt + content\n" +
+          "baca: readfile path=/absolut/f.kt\n" +
+          "SATU format per aksi. mkdir folder saja, writefile file baru/penuh.\n"
+
       fun registerAgent() {
           AIAgentRegistry.register("custom", object : AIAgentRegistry.AgentFactory {
               override fun create(context: Context): AIAgent {
@@ -477,14 +484,7 @@ class CustomEndpoint : AIAgent {
 
   override fun isInitialized(): Boolean = apiKey != null
 
-  companion object {
-      private val CUSTOM_TOOLS_HINT = "\n[ TOOL CALLS ]\n" +
-          "Format eksekusi langsung (hasil balik ke kamu):\n" +
-          "mkdir: <tool_call><function=bash><parameter=mkdir path=/absolut/folder/></function></tool_call>\n" +
-          "tulis: <tool_call><function=writefile><parameter=path path=/absolut/f.kt/><parameter=content>isi</parameter></function></tool_call>\n" +
-          "baca: <tool_call><function=readfile><parameter=path path=/absolut/f.kt/></function></tool_call>\n" +
-          "SATU format per aksi. mkdir folder saja, writefile file baru/penuh.\n"
-  }
+
 
   // ---- persist chat history ke SharedPreferences (max 40 pesan, survive restart) ----
   private val histKey: String get() = "ai_agent_custom_history"
