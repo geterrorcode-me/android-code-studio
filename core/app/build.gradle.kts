@@ -99,7 +99,8 @@ android {
 
   buildTypes {
     debug {
-      signingConfig = signingConfigs.getByName("custom")
+      // fork: debug pakai debug key bawaan (tanpa keystore custom)
+      signingConfig = signingConfigs.getByName("debug")
     }
 
     release {
