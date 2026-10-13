@@ -107,12 +107,21 @@ class AIPreferencesFragment(
             
             if (selectedProviderId == "localllm") {
                 showLocalLLMConfigDialog(selectedProviderName)
+            } else if (selectedProviderId == "custom") {
+                showCustomEndpointConfigDialog(selectedProviderName)
             } else {
                 handleProviderChange(selectedProviderId, selectedProviderName)
             }
         }
     }
     
+    private fun showCustomEndpointConfigDialog(providerName: String) {
+        val dialog = com.tom.rv2ide.artificial.dialogs.CustomEndpointConfigDialog { _, _, _ ->
+            handleProviderChange("custom", providerName)
+        }
+        dialog.show(parentFragmentManager, "CustomEndpointConfigDialog")
+    }
+
     private fun showLocalLLMConfigDialog(providerName: String) {
         val dialog = LocalLLMConfigDialog { baseUrl, modelName ->
             handleProviderChange("localllm", providerName)
