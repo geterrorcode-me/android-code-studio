@@ -47,6 +47,7 @@ class CustomEndpoint : AIAgent {
   private val maxRetryAttempts = 3
   private var agents: Agents? = null
   private var selectedModel: String = "custom-model"
+  private var currentSessionId: String = ""
   override val providerId = "custom"
   override val providerName = "Custom Endpoint"
 
@@ -79,7 +80,7 @@ Selain FILE_TO_MODIFY, kamu juga bisa memakai format ini (langsung dijalankan ap
 Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk file yang sama). mkdir hanya untuk folder. writefile untuk tulis file baru/penuh.
 """
   }
-        
+
   override fun initialize(apiKey: String, context: Context) {
       try {
           this.apiKey = apiKey
@@ -111,10 +112,13 @@ Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk fil
   }
 
   override fun clearConversation() {
-    conversationHistory.clear()
-    try { prefs().putString(histKey, "") } catch (_: Exception) { }
-    modificationHistory.clear()
-    currentAttemptCount = 0
+    // agent-sessions: Clear = mulai sesi baru; sesi lama tersimpan di .acs_sessions/
+    try { startNewSession() } catch (_: Exception) {
+      conversationHistory.clear()
+      try { prefs().putString(histKey, "") } catch (_: Exception) { }
+      modificationHistory.clear()
+      currentAttemptCount = 0
+    }
   }
 
   override fun recordModification(filePath: String, oldContent: String?, newContent: String, success: Boolean) {
@@ -441,7 +445,20 @@ Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk fil
         }
       }
     }
-    
+
+    // agent-sessions: build log terbaru masuk konteks (hasil build bisa langsung ditanggapi agent)
+    try {
+      val root = projectTreeResult?.getRoot() ?: return filesContent
+      val buildLog = File(root, "build/agent-build.log")
+      if (buildLog.isFile) {
+        val logText = buildLog.readText()
+        if (logText.isNotBlank()) {
+          val tail = if (logText.length > 20000) "…[awal dipotong]\n" + logText.takeLast(20000) else logText
+          filesContent["build/agent-build.log (HASIL BUILD TERAKHIR — baca ini dulu kalau user tanya soal error/build)"] = tail
+        }
+      }
+    } catch (_: Exception) { }
+
     return filesContent
   }
 
@@ -522,7 +539,108 @@ Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk fil
       return prefs().getString("ai_agent_custom_max_context_chars", "1000000")?.trim()?.toIntOrNull() ?: 1000000
   }
 
+  // ---- agent-sessions: daftar sesi chat, survive restart, bisa dilanjutkan ----
+  // Struktur: .acs_sessions/index.json = daftar {id, title, ts}; .acs_sessions/<id>.json = pesan
+  private fun sessionsDir(): File? {
+    val root = projectTreeResult?.getRoot() ?: return null
+    val dir = File(root, ".acs_sessions")
+    if (!dir.exists()) dir.mkdirs()
+    return dir
+  }
+
+  private fun currentSessionId(): String {
+    if (currentSessionId.isBlank()) {
+      val last = prefs().getString("ai_agent_custom_session_id", "")
+      currentSessionId = if (!last.isNullOrBlank()) last else newSessionId()
+    }
+    return currentSessionId
+  }
+
+  private fun newSessionId(): String = "s" + System.currentTimeMillis()
+
+  private fun sessionTitle(): String {
+    val first = conversationHistory.firstOrNull { it.role == "user" }?.content?.trim()
+    return first?.take(60)?.replace('\n', ' ') ?: "Sesi baru"
+  }
+
+  private fun saveSessionIndex() {
+    try {
+      val dir = sessionsDir() ?: return
+      val idxFile = File(dir, "index.json")
+      val arr = if (idxFile.isFile) {
+        try { org.json.JSONArray(idxFile.readText()) } catch (_: Exception) { org.json.JSONArray() }
+      } else org.json.JSONArray()
+      // update atau tambah entry sesi sekarang
+      var found = false
+      for (i in 0 until arr.length()) {
+        if (arr.getJSONObject(i).optString("id") == currentSessionId()) {
+          arr.getJSONObject(i).put("title", sessionTitle()).put("ts", System.currentTimeMillis())
+          found = true
+        }
+      }
+      if (!found) {
+        arr.put(org.json.JSONObject().put("id", currentSessionId())
+            .put("title", sessionTitle()).put("ts", System.currentTimeMillis()))
+      }
+      // max 50 sesi terakhir
+      while (arr.length() > 50) arr.remove(0)
+      idxFile.writeText(arr.toString())
+    } catch (_: Exception) { }
+  }
+
+  fun listSessions(): List<Triple<String, String, Long>> {
+    return try {
+      val idxFile = File(sessionsDir() ?: return emptyList(), "index.json")
+      val arr = org.json.JSONArray(idxFile.readText())
+      (0 until arr.length()).map {
+        val o = arr.getJSONObject(it)
+        Triple(o.optString("id"), o.optString("title", "Sesi"), o.optLong("ts", 0L))
+      }.sortedByDescending { it.third }
+    } catch (_: Exception) { emptyList() }
+  }
+
+  fun loadSession(id: String): Boolean {
+    return try {
+      val f = File(sessionsDir() ?: return false, "$id.json")
+      if (!f.isFile) return false
+      val arr = org.json.JSONArray(f.readText())
+      conversationHistory.clear()
+      for (i in 0 until arr.length()) {
+        val o = arr.getJSONObject(i)
+        conversationHistory.add(ConversationMessage(o.optString("role", "user"), o.optString("content", "")))
+      }
+      currentSessionId = id
+      prefs().putString("ai_agent_custom_session_id", id)
+      true
+    } catch (_: Exception) { false }
+  }
+
+  fun startNewSession() {
+    try { persistSessionFile() } catch (_: Exception) { }
+    conversationHistory.clear()
+    modificationHistory.clear()
+    currentAttemptCount = 0
+    currentSessionId = newSessionId()
+    prefs().putString("ai_agent_custom_session_id", currentSessionId)
+    prefs().putString(histKey, "")
+  }
+
+  private fun persistSessionFile() {
+    try {
+      val dir = sessionsDir() ?: return
+      val arr = org.json.JSONArray()
+      for (m in conversationHistory.takeLast(500)) {
+        arr.put(org.json.JSONObject().put("role", m.role).put("content", m.content))
+      }
+      File(dir, currentSessionId() + ".json").writeText(arr.toString())
+      saveSessionIndex()
+    } catch (_: Exception) { }
+  }
+
   private fun persistHistory() {
+      try {
+          persistSessionFile()
+      } catch (_: Exception) { }
       try {
           val take = conversationHistory.takeLast(200)
           val json = org.json.JSONArray()

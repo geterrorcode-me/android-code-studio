@@ -480,6 +480,26 @@ class AIAgentManager(private val context: Context) {
         return currentAgent?.undoLastModification() ?: false
     }
 
+    // agent-sessions: expose manajemen sesi (khusus provider yang mendukung, saat ini CustomEndpoint)
+    fun listSessions(): List<Triple<String, String, Long>> {
+        val agent = currentAgent as? com.tom.rv2ide.artificial.agents.custom.CustomEndpoint
+            ?: return emptyList()
+        return agent.listSessions()
+    }
+
+    fun loadSession(id: String): Boolean {
+        val agent = currentAgent as? com.tom.rv2ide.artificial.agents.custom.CustomEndpoint
+            ?: return false
+        return agent.loadSession(id)
+    }
+
+    fun startNewSession(): Boolean {
+        val agent = currentAgent as? com.tom.rv2ide.artificial.agents.custom.CustomEndpoint
+            ?: return false
+        agent.startNewSession()
+        return true
+    }
+
     fun reinitializeWithSelectedModel() {
         val factory = AIAgentRegistry.getFactory(currentProviderId)
         factory?.getApiKey()?.let { apiKey ->
