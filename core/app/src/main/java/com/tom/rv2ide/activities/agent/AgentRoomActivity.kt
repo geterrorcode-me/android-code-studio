@@ -262,7 +262,7 @@ class AgentRoomActivity : AppCompatActivity() {
                 setPadding(0, 12, 0, 12)
             }
             val iconView = TextView(this).apply {
-                text = icon
+                this.text = icon
                 textSize = 16f
                 setPadding(0, 0, 24, 0)
             }
@@ -270,12 +270,12 @@ class AgentRoomActivity : AppCompatActivity() {
                 orientation = LinearLayout.VERTICAL
             }
             val phaseView = TextView(this).apply {
-                text = phase
+                this.text = phase
                 textSize = 12f
                 setTextColor(androidx.core.content.ContextCompat.getColor(context, com.google.android.material.R.color.design_default_color_primary))
             }
             val textView = TextView(this).apply {
-                text = text
+                this.text = text
                 textSize = 14f
                 setTextIsSelectable(true)
             }
