@@ -133,6 +133,12 @@ class ChatFragment : Fragment() {
         promptInput = view.findViewById(R.id.anyText)
         executeBtn = view.findViewById(R.id.executeBtn)
         clearBtn = view.findViewById(R.id.clearBtn)
+        // chat-ux/agent-room: tombol buka Agent Room
+        view.findViewById<android.view.View>(R.id.agentRoomBtn).setOnClickListener {
+            startActivity(
+                android.content.Intent(requireContext(), com.tom.rv2ide.activities.agent.AgentRoomActivity::class.java)
+            )
+        }
         statusText = view.findViewById(R.id.statusText)
         summaryText = view.findViewById(R.id.summaryText)
         progressIndicator = view.findViewById(R.id.progressIndicator)
