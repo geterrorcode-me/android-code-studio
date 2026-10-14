@@ -77,7 +77,9 @@ Selain FILE_TO_MODIFY, kamu juga bisa memakai format ini (langsung dijalankan ap
 <tool_call><function=bash><parameter=mkdir path=/absolut/path/baru/></function></tool_call>
 <tool_call><function=writefile><parameter=path path=/absolut/file/baru.kt/><parameter=content>isi file...</parameter></function></tool_call>
 <tool_call><function=readfile><parameter=path path=/absolut/file.kt/></function></tool_call>
+<tool_call><function=build_project><parameter=task path=assembleDebug/></function></tool_call>
 Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk file yang sama). mkdir hanya untuk folder. writefile untuk tulis file baru/penuh.
+build_project: jalankan build Gradle (default assembleDebug). HANYA pakai ini kalau user minta build/cek error. Hasil build gagal akan dikirim balik ke kamu — perbaiki lalu build ulang (maksimal 3x).
 """
   }
 
@@ -172,6 +174,66 @@ Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk fil
   override fun getCurrentAttemptCount(): Int = currentAttemptCount
 
   override fun canRetry(): Boolean = currentAttemptCount < maxRetryAttempts
+
+  // ---- agent-build-loop (Fase 3): agent bisa memicu build sendiri & membaca hasilnya ----
+  private var lastBuildResult: String? = null
+
+  private fun isBuildEnabled(): Boolean {
+    return prefs().getString("ai_agent_build_enabled", "true")?.trim() == "true"
+  }
+
+  // Blokir build loop biar nggak infinite: max N build per request agent
+  private var buildsThisRequest = 0
+  private val maxBuildsPerRequest = 3
+
+  private fun executeBuild(task: String): ToolCallResult {
+    if (!isBuildEnabled()) {
+      return ToolCallResult("build_project", false, "build dinonaktifkan via pengaturan ai_agent_build_enabled")
+    }
+    if (buildsThisRequest >= maxBuildsPerRequest) {
+      return ToolCallResult("build_project", false, "batas $maxBuildsPerRequest build per request tercapai. Selesaikan dengan info yang ada.")
+    }
+    val buildService = try {
+      com.tom.rv2ide.lookup.Lookup.getDefault()
+          .lookup(com.tom.rv2ide.projects.builder.BuildService.KEY_BUILD_SERVICE)
+    } catch (_: Exception) { null }
+
+    if (buildService == null) {
+      return ToolCallResult("build_project", false, "BuildService belum tersedia. Pastikan project sudah dibuka & tooling server jalan.")
+    }
+    if (!buildService.isToolingServerStarted()) {
+      return ToolCallResult("build_project", false, "Tooling server belum siap. Buka project dulu / tunggu indexing selesai.")
+    }
+
+    buildsThisRequest++
+    val trimmedTask = task.trim().ifBlank { "assembleDebug" }
+    return try {
+      // BLOKING di thread IO — disengaja: generateCode sudah berjalan di Dispatchers.IO
+      val result = buildService.executeTasks(trimmedTask).get()
+      if (result.isSuccessful) {
+        lastBuildResult = "BUILD SUCCESSFUL ($trimmedTask)"
+        ToolCallResult("build_project", true, "BUILD SUCCESSFUL ($trimmedTask). Tugas selesai. Jangan build lagi.")
+      } else {
+        // ambil error asli dari build/agent-build.log (ditulis oleh EditorBuildEventListener)
+        val logTail = readBuildLogTail()
+        lastBuildResult = "BUILD FAILED ($trimmedTask)"
+        ToolCallResult("build_project", false, "BUILD FAILED ($trimmedTask). Error terakhir:\n$logTail")
+      }
+    } catch (e: Exception) {
+      ToolCallResult("build_project", false, "build exception: ${e.message}")
+    }
+  }
+
+  private fun readBuildLogTail(): String {
+    return try {
+      val root = projectTreeResult?.getRoot()
+      val logFile = root?.let { File(it, "build/agent-build.log") }
+      if (logFile != null && logFile.isFile) {
+        val text = logFile.readText()
+        if (text.length > 12000) "…[awal dipotong]\n" + text.takeLast(12000) else text
+      } else "(build/agent-build.log tidak ditemukan)"
+    } catch (_: Exception) { "(gagal membaca build/agent-build.log)" }
+  }
 
   private fun isUserRequestingCorrection(message: String): Boolean {
     val correctionKeywords = listOf(
@@ -268,36 +330,61 @@ Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk fil
             append(prompt)
           }
 
-          val response = callDeepSeekAPI(key, fullPrompt)
+          // ===== agent-build-loop (Fase 3): loop agentic =====
+          // Setiap respons dieksekusi tool_call-nya; kalau ada build_project, hasil build
+          // dikirim BALIK ke model untuk langkah berikutnya (fix -> build ulang) maks 6 iterasi.
+          buildsThisRequest = 0
+          var finalResponse = ""
+          var nextInput: String? = prompt
+          var iteration = 0
+          val maxIterations = 6
 
-          if (response.isBlank()) {
-            return@withContext Result.failure(Exception("Empty response from AI"))
+          while (nextInput != null && iteration < maxIterations) {
+            iteration++
+            val response = callDeepSeekAPI(key, fullPrompt + if (iteration == 1) "" else stepPromptSuffix(nextInput!!))
+
+            if (response.isBlank()) {
+              return@withContext Result.failure(Exception("Empty response from AI"))
+            }
+
+            // big-context: compact otomatis bila riwayat mendekati budget (ala OpenClaw /compact)
+            maybeCompactHistory()
+
+            // eksekusi tool_call XML (mkdir/writefile/build_project) sebelum disimpan ke history
+            val toolResults = parseAndExecuteToolCalls(response)
+            val storedResponse = if (toolResults.isNotEmpty()) {
+                response + "\n\n[TOOL RESULTS]\n" + toolResults.joinToString("\n") { r ->
+                    "- ${r.function}: ${if (r.success) "OK" else "FAIL"} — ${r.message.take(2000)}"
+                }
+            } else response
+
+            conversationHistory.add(ConversationMessage("user", if (iteration == 1) prompt else "[langkah $iteration] " + nextInput!!.take(2000)))
+            conversationHistory.add(ConversationMessage("assistant", storedResponse))
+            persistHistory()
+
+            finalResponse = response
+
+            // lanjut loop hanya kalau ada build_project yang GAGAL (perlu fix + build ulang)
+            val buildResult = toolResults.lastOrNull { it.function == "build_project" }
+            nextInput = if (buildResult != null && !buildResult.success &&
+                            buildsThisRequest < maxBuildsPerRequest) {
+              "[SYSTEM] Build gagal. Baca error di atas, perbaiki file yang disebut (pakai writefile/FILE_TO_MODIFY), lalu build ulang dengan build_project. Kalau error sama muncul lagi, coba pendekatan berbeda."
+            } else {
+              null
+            }
           }
 
-          // big-context: compact otomatis bila riwayat mendekati budget (ala OpenClaw /compact)
-          maybeCompactHistory()
-
-          // eksekusi tool_call XML (mkdir/writefile) sebelum disimpan ke history
-          val toolResults = parseAndExecuteToolCalls(response)
-          val storedResponse = if (toolResults.isNotEmpty()) {
-              response + "\n\n[TOOL RESULTS]\n" + toolResults.joinToString("\n") { r ->
-                  "- ${r.function}: ${if (r.success) "OK" else "FAIL"} — ${r.message}"
-              }
-          } else response
-          conversationHistory.add(ConversationMessage("user", prompt))
-          conversationHistory.add(ConversationMessage("assistant", storedResponse))
-          persistHistory()
-
-          if (conversationHistory.size > 20) {
-            conversationHistory.removeAt(0)
-            conversationHistory.removeAt(0)
-          }
-
-          Result.success(response)
+          Result.success(finalResponse)
         } catch (e: Exception) {
           Result.failure(e)
         }
       }
+
+  private fun stepPromptSuffix(systemNote: String): String {
+    return "\n\n=== SYSTEM NOTE (LANJUTAN LANGKAH) ===\n$systemNote\n\n=== HASIL LANGKAH SEBELUMNYA ===\n" +
+        (lastBuildResult ?: "") +
+        "\n\nBalas HANYA dengan langkah berikutnya. Jangan ulangi penjelasan."
+  }
 
   private fun callDeepSeekAPI(apiKey: String, prompt: String): String {
     android.util.Log.d("CustomEndpoint", "Starting API call to DeepSeek")
@@ -768,6 +855,12 @@ Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk fil
                           if (ok) recordModification(path, null, content, true)
                           results.add(ToolCallResult(fn, ok, if (ok) "wrote: $path" else "write failed: $path"))
                       }
+                  }
+                  "build_project", "build", "assemble" -> {
+                      // agent-build-loop: agent memicu build Gradle sendiri (default assembleDebug)
+                      val params = parseParams(inner)
+                      val task = params["task"] ?: params["type"] ?: ""
+                      results.add(executeBuild(task))
                   }
                   else -> results.add(ToolCallResult(fn, false, "fungsi tidak didukung: $fn"))
               }
