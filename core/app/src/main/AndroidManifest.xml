@@ -79,6 +79,11 @@
     <activity android:name=".activities.ContributorsActivity" />
     <activity android:name=".activities.IDEConfigurations" />
     <activity android:name=".activities.ActivityM3Icons" />
+    <activity
+      android:name=".activities.agent.AgentRoomActivity"
+      android:label="Agent Room"
+      android:theme="@style/Theme.AndroidIDE"
+      android:windowSoftInputMode="adjustResize" />
 
     <activity
       android:name=".activities.TerminalActivity"
