@@ -127,6 +127,24 @@ class GradleBuildService :
     private val log = LoggerFactory.getLogger(GradleBuildService::class.java)
     private val NOTIFICATION_ID = R.string.app_name
     private val SERVER_System_err = LoggerFactory.getLogger("ToolingApiErrorStream")
+    private const val LOGGER_RUNTIME_GROUP = "io.github.mohammed-baqer-null"
+    private const val LOGGER_RUNTIME_ARTIFACT = "logger-runtime"
+    private const val LOGGER_RUNTIME_VERSION = "1.0.0"
+
+    private const val POM_TEMPLATE =
+        """
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>__GROUP__</groupId>
+  <artifactId>__ARTIFACT__</artifactId>
+  <version>__VERSION__</version>
+  <packaging>aar</packaging>
+</project>
+"""
+            .trim()
+            .replace("__GROUP__", LOGGER_RUNTIME_GROUP)
+            .replace("__ARTIFACT__", LOGGER_RUNTIME_ARTIFACT)
   }
 
   override fun onCreate() {
@@ -232,21 +250,26 @@ class GradleBuildService :
   /** Creates a Gradle init script that injects the logger plugin into user projects. */
   private fun createLoggerInitScript(): File {
     val initScript = File(Environment.TMP_DIR, "ide-logger-init.gradle")
+    val m2RepoDir = publishLoggerRuntimeToLocalRepo()
+    val m2RepoPath = m2RepoDir.absolutePath.replace("\\", "\\\\").replace("'", "\\'")
     initScript.writeText(
         """
           allprojects {
+              repositories {
+                  maven { url '${m2RepoPath}' }
+              }
               afterEvaluate {
-                  if (plugins.hasPlugin('com.android.application') || 
+                  if (plugins.hasPlugin('com.android.application') ||
                       plugins.hasPlugin('com.android.library')) {
-                      
+
                       android {
                           compileOptions {
                               coreLibraryDesugaringEnabled = true
                           }
                       }
-                      
+
                       dependencies {
-                          implementation files('${getLoggerRuntimeAar().absolutePath}')
+                          implementation 'io.github.mohammed-baqer-null:logger-runtime:$LOGGER_RUNTIME_VERSION'
                           coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
                       }
                   }
@@ -257,6 +280,38 @@ class GradleBuildService :
     )
     return initScript
   }
+
+  /**
+   * Publishes logger-runtime.aar into a local Maven repository layout
+   * (plugins/logger/m2) so that user projects can resolve it as a normal
+   * module dependency. Resolving via a Maven repository avoids the AGP
+   * "Null extracted folder for artifact ... variant=local file" failure that
+   * occurs when an AAR is injected with files() during configuration phase.
+   */
+  private fun publishLoggerRuntimeToLocalRepo(): File {
+    val aar = getLoggerRuntimeAar()
+    val m2Root = File(getLoggerPluginDir(), "m2")
+    val artifactDir =
+        File(
+            m2Root,
+            "io/github/mohammed-baqer-null/logger-runtime/$LOGGER_RUNTIME_VERSION",
+        )
+    val artifactFile = File(artifactDir, "logger-runtime-$LOGGER_RUNTIME_VERSION.aar")
+    val pomFile = File(artifactDir, "logger-runtime-$LOGGER_RUNTIME_VERSION.pom")
+
+    // Republish only if the source AAR is newer than the published artifact.
+    if (artifactFile.exists() && pomFile.exists() && artifactFile.lastModified() >= aar.lastModified()) {
+      return m2Root
+    }
+
+    artifactDir.mkdirs()
+    aar.inputStream().use { input ->
+        java.io.FileOutputStream(artifactFile).use { output -> input.copyTo(output) }
+    }
+    pomFile.writeText(POM_TEMPLATE.replace("__VERSION__", LOGGER_RUNTIME_VERSION))
+    return m2Root
+  }
+
 
   /** Gets or creates the logger plugin directory. */
   private fun getLoggerPluginDir(): File {
