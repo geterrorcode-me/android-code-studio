@@ -216,7 +216,7 @@ Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk fil
             // big-context: auto-load MEMORY.md dari project root di awal sesi (ala OpenClaw)
             if (projectTreeResult != null && conversationHistory.size <= 2) {
               try {
-                val mem = File(projectTreeResult!!.root, "MEMORY.md")
+                val mem = File(projectTreeResult!!.getRoot(), "MEMORY.md")
                 if (mem.isFile) {
                   val memText = mem.readText()
                   if (memText.isNotBlank()) {
