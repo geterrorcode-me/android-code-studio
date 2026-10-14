@@ -26,6 +26,7 @@ class AIRequestHandler(
     private val fileModificationAdapter: FileModificationAdapter,
     private val summaryCard: LinearLayout,
     private val onFileOpen: (String) -> Unit,
+    private val onChatBubble: (String, String) -> Unit,
     private val onTypeText: (String, Long) -> Unit,
     private val getCurrentFile: () -> File?,
     private val refreshEditor: () -> Unit
@@ -124,6 +125,8 @@ class AIRequestHandler(
     ) {
         progressIndicator.visibility = View.GONE
         statusText.text = "✅ Operation completed"
+        // chat-ux: ringkasan hasil modifikasi juga masuk bubble chat
+        onChatBubble("agent", buildSummaryText(summary))
         summaryText.text = buildSummaryText(summary)
         summaryCard.visibility = View.VISIBLE
         
@@ -141,7 +144,9 @@ class AIRequestHandler(
     private fun handleTextResponse(response: String) {
         progressIndicator.visibility = View.GONE
         executeBtn.isEnabled = true
-        statusText.text = response
+        // chat-ux: balasan agent jadi bubble baru, tidak menimpa chat sebelumnya
+        onChatBubble("agent", response)
+        statusText.text = "✅ Selesai — lihat chat di atas"
         summaryCard.visibility = View.GONE
         fileModificationList.visibility = View.GONE
     }
@@ -149,14 +154,10 @@ class AIRequestHandler(
     private fun handleError(message: String) {
         progressIndicator.visibility = View.GONE
         executeBtn.isEnabled = true
-        
-        statusText.text = """
-❌ ERROR OCCURRED
 
-$message
-
-Please check the error message and try again.
-        """.trimIndent()
+        // chat-ux: error juga tampil sebagai bubble (riwayat utuh), status ringkas saja
+        onChatBubble("agent", "❌ ERROR\n\n$message")
+        statusText.text = "❌ Terjadi error — detail di chat"
     }
     
     private fun buildSummaryText(summary: AIAgentManager.ModificationSummary): String {
