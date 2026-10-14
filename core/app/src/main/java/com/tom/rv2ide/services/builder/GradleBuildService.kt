@@ -131,7 +131,7 @@ class GradleBuildService :
     private const val LOGGER_RUNTIME_ARTIFACT = "logger-runtime"
     private const val LOGGER_RUNTIME_VERSION = "1.0.0"
 
-    private const val POM_TEMPLATE =
+    private val POM_TEMPLATE =
         """
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0">
