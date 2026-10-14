@@ -48,6 +48,8 @@ class ProjectTreeResult(
     val tree: String,
     private val root: File
 ) {
+    // big-context: akses root untuk MEMORY.md auto-load
+    fun getRoot(): File = root
 
     fun getFileByName(filename: String): String? {
 

@@ -47,6 +47,7 @@ class CustomEndpoint : AIAgent {
   private val maxRetryAttempts = 3
   private var agents: Agents? = null
   private var selectedModel: String = "custom-model"
+  private var currentSessionId: String = ""
   override val providerId = "custom"
   override val providerName = "Custom Endpoint"
 
@@ -68,8 +69,18 @@ class CustomEndpoint : AIAgent {
               }
           })
       }
+
+      private const val CUSTOM_TOOLS_HINT = """
+
+[ TOOL CALLS — BISA DIEKSEKUSI LANGSUNG ]
+Selain FILE_TO_MODIFY, kamu juga bisa memakai format ini (langsung dijalankan app, hasilnya balik ke kamu):
+<tool_call><function=bash><parameter=mkdir path=/absolut/path/baru/></function></tool_call>
+<tool_call><function=writefile><parameter=path path=/absolut/file/baru.kt/><parameter=content>isi file...</parameter></function></tool_call>
+<tool_call><function=readfile><parameter=path path=/absolut/file.kt/></function></tool_call>
+Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk file yang sama). mkdir hanya untuk folder. writefile untuk tulis file baru/penuh.
+"""
   }
-        
+
   override fun initialize(apiKey: String, context: Context) {
       try {
           this.apiKey = apiKey
@@ -101,10 +112,13 @@ class CustomEndpoint : AIAgent {
   }
 
   override fun clearConversation() {
-    conversationHistory.clear()
-    try { prefs().putString(histKey, "") } catch (_: Exception) { }
-    modificationHistory.clear()
-    currentAttemptCount = 0
+    // agent-sessions: Clear = mulai sesi baru; sesi lama tersimpan di .acs_sessions/
+    try { startNewSession() } catch (_: Exception) {
+      conversationHistory.clear()
+      try { prefs().putString(histKey, "") } catch (_: Exception) { }
+      modificationHistory.clear()
+      currentAttemptCount = 0
+    }
   }
 
   override fun recordModification(filePath: String, oldContent: String?, newContent: String, success: Boolean) {
@@ -202,6 +216,21 @@ class CustomEndpoint : AIAgent {
                 append("\n\n")
               }
             }
+
+            // big-context: auto-load MEMORY.md dari project root di awal sesi (ala OpenClaw)
+            if (projectTreeResult != null && conversationHistory.size <= 2) {
+              try {
+                val mem = File(projectTreeResult!!.getRoot(), "MEMORY.md")
+                if (mem.isFile) {
+                  val memText = mem.readText()
+                  if (memText.isNotBlank()) {
+                    append("=== PROJECT MEMORY (MEMORY.md, dibaca otomatis) ===\n")
+                    append(memText)
+                    append("\n\n")
+                  }
+                }
+              } catch (_: Exception) { }
+            }
             
             if (context != null) {
               append("=== ADDITIONAL CONTEXT ===\n")
@@ -244,6 +273,9 @@ class CustomEndpoint : AIAgent {
           if (response.isBlank()) {
             return@withContext Result.failure(Exception("Empty response from AI"))
           }
+
+          // big-context: compact otomatis bila riwayat mendekati budget (ala OpenClaw /compact)
+          maybeCompactHistory()
 
           // eksekusi tool_call XML (mkdir/writefile) sebelum disimpan ke history
           val toolResults = parseAndExecuteToolCalls(response)
@@ -298,7 +330,10 @@ class CustomEndpoint : AIAgent {
       requestBody.put("model", selectedModel)
       requestBody.put("messages", messages)
       requestBody.put("temperature", 0.7)
-      requestBody.put("max_tokens", 4096)
+      // big-context: max output dari prefs (default naik dari 4096 -> 16384, model ctx-1M aman)
+      val maxOut = com.tom.rv2ide.preferences.internal.prefManager
+          .getString("ai_agent_custom_max_output_tokens", "16384")?.trim()?.toIntOrNull() ?: 16384
+      requestBody.put("max_tokens", maxOut.coerceAtLeast(1024))
       
       android.util.Log.d("CustomEndpoint", "Request body: ${requestBody.toString()}")
       
@@ -391,13 +426,17 @@ class CustomEndpoint : AIAgent {
       val trimmedPath = filePath.trim()
       val file = File(trimmedPath)
       
-      if (file.isFile && 
-          (trimmedPath.endsWith(".kt") || 
+      if (file.isFile &&
+          (trimmedPath.endsWith(".kt") ||
            trimmedPath.endsWith(".java") ||
            trimmedPath.endsWith(".xml") ||
            trimmedPath.endsWith(".gradle") ||
-           trimmedPath.endsWith(".gradle.kts")) &&
-          !trimmedPath.contains("/build/") && 
+           trimmedPath.endsWith(".gradle.kts") ||
+           trimmedPath.endsWith(".md") ||
+           trimmedPath.endsWith(".json") ||
+           trimmedPath.endsWith(".properties") ||
+           trimmedPath.endsWith(".toml")) &&
+          !trimmedPath.contains("/build/") &&
           !trimmedPath.contains("/.gradle/")) {
         try {
           val content = file.readText()
@@ -406,7 +445,20 @@ class CustomEndpoint : AIAgent {
         }
       }
     }
-    
+
+    // agent-sessions: build log terbaru masuk konteks (hasil build bisa langsung ditanggapi agent)
+    try {
+      val root = projectTreeResult?.getRoot() ?: return filesContent
+      val buildLog = File(root, "build/agent-build.log")
+      if (buildLog.isFile) {
+        val logText = buildLog.readText()
+        if (logText.isNotBlank()) {
+          val tail = if (logText.length > 20000) "…[awal dipotong]\n" + logText.takeLast(20000) else logText
+          filesContent["build/agent-build.log (HASIL BUILD TERAKHIR — baca ini dulu kalau user tanya soal error/build)"] = tail
+        }
+      }
+    } catch (_: Exception) { }
+
     return filesContent
   }
 
@@ -477,29 +529,123 @@ class CustomEndpoint : AIAgent {
 
   override fun isInitialized(): Boolean = apiKey != null
 
-  companion object {
-      private const val CUSTOM_TOOLS_HINT = """
-
-[ TOOL CALLS — BISA DIEKSEKUSI LANGSUNG ]
-Selain FILE_TO_MODIFY, kamu juga bisa memakai format ini (langsung dijalankan app, hasilnya balik ke kamu):
-<tool_call><function=bash><parameter=mkdir path=/absolut/path/baru/></function></tool_call>
-<tool_call><function=writefile><parameter=path path=/absolut/file/baru.kt/><parameter=content>isi file...</parameter></function></tool_call>
-<tool_call><function=readfile><parameter=path path=/absolut/file.kt/></function></tool_call>
-Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk file yang sama). mkdir hanya untuk folder. writefile untuk tulis file baru/penuh.
-"""
-  }
-
-  // ---- persist chat history ke SharedPreferences (max 40 pesan, survive restart) ----
+  // ---- persist chat history ke SharedPreferences (big-context: 200 pesan penuh, survive restart) ----
   private val histKey: String get() = "ai_agent_custom_history"
 
   private fun prefs() = com.tom.rv2ide.preferences.internal.prefManager
 
+  private fun maxHistoryChars(): Int {
+      // big-context: budget riwayat dari prefs, default 1M karakter (ctx-1M ready)
+      return prefs().getString("ai_agent_custom_max_context_chars", "1000000")?.trim()?.toIntOrNull() ?: 1000000
+  }
+
+  // ---- agent-sessions: daftar sesi chat, survive restart, bisa dilanjutkan ----
+  // Struktur: .acs_sessions/index.json = daftar {id, title, ts}; .acs_sessions/<id>.json = pesan
+  private fun sessionsDir(): File? {
+    val root = projectTreeResult?.getRoot() ?: return null
+    val dir = File(root, ".acs_sessions")
+    if (!dir.exists()) dir.mkdirs()
+    return dir
+  }
+
+  private fun currentSessionId(): String {
+    if (currentSessionId.isBlank()) {
+      val last = prefs().getString("ai_agent_custom_session_id", "")
+      currentSessionId = if (!last.isNullOrBlank()) last else newSessionId()
+    }
+    return currentSessionId
+  }
+
+  private fun newSessionId(): String = "s" + System.currentTimeMillis()
+
+  private fun sessionTitle(): String {
+    val first = conversationHistory.firstOrNull { it.role == "user" }?.content?.trim()
+    return first?.take(60)?.replace('\n', ' ') ?: "Sesi baru"
+  }
+
+  private fun saveSessionIndex() {
+    try {
+      val dir = sessionsDir() ?: return
+      val idxFile = File(dir, "index.json")
+      val arr = if (idxFile.isFile) {
+        try { org.json.JSONArray(idxFile.readText()) } catch (_: Exception) { org.json.JSONArray() }
+      } else org.json.JSONArray()
+      // update atau tambah entry sesi sekarang
+      var found = false
+      for (i in 0 until arr.length()) {
+        if (arr.getJSONObject(i).optString("id") == currentSessionId()) {
+          arr.getJSONObject(i).put("title", sessionTitle()).put("ts", System.currentTimeMillis())
+          found = true
+        }
+      }
+      if (!found) {
+        arr.put(org.json.JSONObject().put("id", currentSessionId())
+            .put("title", sessionTitle()).put("ts", System.currentTimeMillis()))
+      }
+      // max 50 sesi terakhir
+      while (arr.length() > 50) arr.remove(0)
+      idxFile.writeText(arr.toString())
+    } catch (_: Exception) { }
+  }
+
+  fun listSessions(): List<Triple<String, String, Long>> {
+    return try {
+      val idxFile = File(sessionsDir() ?: return emptyList(), "index.json")
+      val arr = org.json.JSONArray(idxFile.readText())
+      (0 until arr.length()).map {
+        val o = arr.getJSONObject(it)
+        Triple(o.optString("id"), o.optString("title", "Sesi"), o.optLong("ts", 0L))
+      }.sortedByDescending { it.third }
+    } catch (_: Exception) { emptyList() }
+  }
+
+  fun loadSession(id: String): Boolean {
+    return try {
+      val f = File(sessionsDir() ?: return false, "$id.json")
+      if (!f.isFile) return false
+      val arr = org.json.JSONArray(f.readText())
+      conversationHistory.clear()
+      for (i in 0 until arr.length()) {
+        val o = arr.getJSONObject(i)
+        conversationHistory.add(ConversationMessage(o.optString("role", "user"), o.optString("content", "")))
+      }
+      currentSessionId = id
+      prefs().putString("ai_agent_custom_session_id", id)
+      true
+    } catch (_: Exception) { false }
+  }
+
+  fun startNewSession() {
+    try { persistSessionFile() } catch (_: Exception) { }
+    conversationHistory.clear()
+    modificationHistory.clear()
+    currentAttemptCount = 0
+    currentSessionId = newSessionId()
+    prefs().putString("ai_agent_custom_session_id", currentSessionId)
+    prefs().putString(histKey, "")
+  }
+
+  private fun persistSessionFile() {
+    try {
+      val dir = sessionsDir() ?: return
+      val arr = org.json.JSONArray()
+      for (m in conversationHistory.takeLast(500)) {
+        arr.put(org.json.JSONObject().put("role", m.role).put("content", m.content))
+      }
+      File(dir, currentSessionId() + ".json").writeText(arr.toString())
+      saveSessionIndex()
+    } catch (_: Exception) { }
+  }
+
   private fun persistHistory() {
       try {
-          val take = conversationHistory.takeLast(40)
+          persistSessionFile()
+      } catch (_: Exception) { }
+      try {
+          val take = conversationHistory.takeLast(200)
           val json = org.json.JSONArray()
           for (m in take) {
-              json.put(org.json.JSONObject().put("role", m.role).put("content", m.content.take(4000)))
+              json.put(org.json.JSONObject().put("role", m.role).put("content", m.content))
           }
           prefs().putString(histKey, json.toString())
       } catch (_: Exception) { }
@@ -511,11 +657,38 @@ Aturan: SATU format per aksi (jangan campur FILE_TO_MODIFY + tool_call untuk fil
           if (raw.isBlank()) return
           val json = org.json.JSONArray(raw)
           conversationHistory.clear()
-          for (i in 0 until minOf(json.length(), 40)) {
+          for (i in 0 until minOf(json.length(), 200)) {
               val o = json.getJSONObject(i)
               conversationHistory.add(ConversationMessage(o.optString("role", "user"), o.optString("content", "")))
           }
       } catch (_: Exception) { }
+  }
+
+  // ---- big-context: compact otomatis ala OpenClaw ----
+  // Saat total karakter riwayat mendekati budget, ringkas pesan-pesan lama jadi satu
+  // ringkasan, sisakan pesan terbaru utuh. Tidak memanggil API: ringkasan = sisa prompt
+  // model dipadatkan (deterministik, tanpa biaya/kuota tambahan).
+  private fun maybeCompactHistory() {
+      val budget = maxHistoryChars()
+      val total = conversationHistory.sumOf { it.content.length + 8 }
+      if (total < budget) return
+
+      val keepRecent = conversationHistory.takeLast(4).toMutableList()
+      val older = conversationHistory.dropLast(4)
+      if (older.isEmpty()) return
+
+      val sb = StringBuilder()
+      sb.append("[COMPACTED HISTORY — ringkasan otomatis dari ").append(older.size).append(" pesan sebelumnya]\n")
+      for (m in older) {
+          val c = m.content
+          val head = if (c.length > 300) c.take(300) + "…[dipotong]" else c
+          sb.append(m.role.uppercase()).append(": ").append(head.replace('\n', ' ')).append('\n')
+      }
+      val compacted = ConversationMessage("system", sb.toString())
+      conversationHistory.clear()
+      conversationHistory.add(compacted)
+      conversationHistory.addAll(keepRecent)
+      persistHistory()
   }
 
   // ---- tool_call XML: <tool_call><function=bash><parameter=mkdir path=.../> + writefile ----

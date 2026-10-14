@@ -133,7 +133,21 @@ class EditorBuildEventListener : GradleBuildService.EventListener {
   override fun onOutput(line: String?) {
     checkActivity("onOutput") ?: return
 
-    line?.let { activity.appendBuildOutput(it) }
+    line?.let {
+      activity.appendBuildOutput(it)
+      // agent-sessions: simpan build output ke file supaya AI agent bisa membacanya
+      try {
+        val projectRoot = com.tom.rv2ide.projects.IProjectManager.getInstance().projectDir
+        val logFile = java.io.File(projectRoot, "build/agent-build.log")
+        if (!logFile.exists()) {
+          logFile.parentFile?.mkdirs()
+          logFile.writeText("")
+        }
+        logFile.appendText(if (it.endsWith("\n")) it else it + "\n")
+      } catch (e: Exception) {
+        // jangan ganggu build kalau logging gagal
+      }
+    }
     // TODO This can be handled better when ProgressEvents are received from Tooling API server
     if (line!!.contains("BUILD SUCCESSFUL") || line.contains("BUILD FAILED")) {
       activity.setStatus(line)
