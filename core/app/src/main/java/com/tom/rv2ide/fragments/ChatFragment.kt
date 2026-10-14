@@ -34,6 +34,7 @@ import android.widget.LinearLayout
 import android.content.SharedPreferences
 import com.tom.rv2ide.R
 import com.tom.rv2ide.adapters.FileModificationAdapter
+import com.tom.rv2ide.adapters.ChatMessageAdapter
 import com.tom.rv2ide.artificial.agents.AIAgentManager
 import com.tom.rv2ide.managers.CodeCompletionManager
 import com.tom.rv2ide.handlers.AIRequestHandler
@@ -58,6 +59,9 @@ class ChatFragment : Fragment() {
     private lateinit var summaryText: MaterialTextView
     private lateinit var progressIndicator: CircularProgressIndicator
     private lateinit var fileModificationList: RecyclerView
+    private lateinit var chatList: RecyclerView
+    private lateinit var chatAdapter: ChatMessageAdapter
+    private lateinit var mainScrollView: androidx.core.widget.NestedScrollView
     private lateinit var summaryCard: LinearLayout
     private lateinit var fileModificationAdapter: FileModificationAdapter
     
@@ -138,6 +142,18 @@ class ChatFragment : Fragment() {
         progressIndicator = view.findViewById(R.id.progressIndicator)
         fileModificationList = view.findViewById(R.id.fileModificationList)
         summaryCard = view.findViewById(R.id.summaryCard)
+        // chat-ux: daftar bubble chat
+        chatList = view.findViewById(R.id.chatRecyclerView)
+        mainScrollView = view.findViewById(R.id.mainScrollView)
+        chatAdapter = ChatMessageAdapter()
+        chatList.layoutManager = androidx.recyclerview.widget.LinearLayoutManager(requireContext())
+        chatList.adapter = chatAdapter
+    }
+
+    /** chat-ux: tambah bubble + auto-scroll ke bawah */
+    private fun addChatBubble(role: String, text: String) {
+        chatAdapter.add(ChatMessageAdapter.Msg(role, text))
+        chatList.post { mainScrollView.fullScroll(android.view.View.FOCUS_DOWN) }
     }
 
     private fun setupRecyclerView() {
@@ -173,6 +189,9 @@ class ChatFragment : Fragment() {
             onFileOpen = { fileName ->
                 openFileInEditor(fileName)
             },
+            onChatBubble = { role, text ->
+                addChatBubble(role, text)
+            },
             onTypeText = { text, delay -> typeText(text, delay) },
             getCurrentFile = { getCurrentFile() },
             refreshEditor = { refreshCurrentEditor() }
@@ -189,6 +208,9 @@ class ChatFragment : Fragment() {
             }
             
             codeCompletionManager.clearSuggestion()
+            // chat-ux: tampilkan pesan user sebagai bubble + kosongkan input
+            addChatBubble("user", userRequest)
+            promptInput.setText("")
             aiRequestHandler.execute(userRequest)
         }
     
@@ -426,6 +448,7 @@ class ChatFragment : Fragment() {
                 fileModificationList.visibility = View.GONE
                 summaryCard.visibility = View.GONE
                 fileModificationAdapter.clear()
+                chatAdapter.clear() // chat-ux: bersihkan bubble (sesi baru)
                 
                 showSnackbar("Conversation cleared")
             } catch (e: Exception) {
